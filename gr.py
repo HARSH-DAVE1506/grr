@@ -1,16 +1,16 @@
 import cv2
 import mediapipe as mp
-import serial
-import json
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
+import json
+import serial
+import time
+import threading
 
-# Serial communication setup
+# Serial communication settings
 serial_port = '/dev/ttymxc3'
 baud_rate = 115200
-ser = serial.Serial(serial_port, baud_rate, timeout=1)
 
-# Gesture labels
 GESTURE_LABELS = {
     0: "Unknown",
     1: "Closed_Fist",
@@ -33,14 +33,7 @@ COMMANDS = {
 
 ZERO_COMMAND = {"T": 133, "X": 0, "Y": 0, "SPD": 0, "ACC": 0}
 
-# Initialize the hand tracking model
-hands = mp.solutions.hands.Hands(
-    min_detection_confidence=0.7,
-    min_tracking_confidence=0.5,
-    static_image_mode=False
-)
-
-# Gesture Recognizer setup
+# Initialize the gesture recognition model
 base_options = python.BaseOptions(model_asset_path='gesture_recognizer.task')
 options = vision.GestureRecognizerOptions(base_options=base_options)
 recognizer = vision.GestureRecognizer.create_from_options(options)
@@ -48,50 +41,56 @@ recognizer = vision.GestureRecognizer.create_from_options(options)
 # Open the default camera (index 0)
 cap = cv2.VideoCapture(0)
 
+# Initialize serial communication
+ser = serial.Serial(serial_port, baud_rate, timeout=1)
+
 def send_serial_command(command):
-    try:
-        ser.write((json.dumps(command) + '\n').encode('utf-8'))
-        print("Command sent:", command)
-    except serial.SerialException as e:
-        print(f'Failed to send command: {e}')
+    json_command = json.dumps(command)
+    ser.write(f"{json_command}\n".encode())
+    time.sleep(0.1)  # Small delay to ensure command is sent
 
-while cap.isOpened():
-    success, frame = cap.read()
-    if not success:
-        print("Failed to read frame from camera.")
-        break
+def send_zero_command():
+    send_serial_command(ZERO_COMMAND)
+    print("Zero command sent")
 
-    # Convert the frame to RGB
-    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+try:
+    while cap.isOpened():
+        # Read a frame from the camera
+        success, frame = cap.read()
+        if not success:
+            print("Failed to read frame from camera.")
+            break
 
-    # Process the frame using MediaPipe Hands
-    results = hands.process(rgb_frame)
-    image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
+        # Convert the frame to RGB
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
 
-    recognition_result = recognizer.recognize(image)
+        # Recognize gestures
+        recognition_result = recognizer.recognize(image)
 
-    # Process the gesture recognition result
-    if recognition_result.gestures:
-        top_gesture = recognition_result.gestures[0][0].category_name
-        print("Recognized Gesture:", top_gesture)
+        # Process the result
+        if recognition_result.gestures:
+            top_gesture = recognition_result.gestures[0][0]
+            print(f"Detected gesture: {top_gesture.category_name}")
 
-        # Send corresponding command via serial
-        if top_gesture in COMMANDS:
-            send_serial_command(COMMANDS[top_gesture])
+            if top_gesture.category_name in COMMANDS:
+                gesture_command = COMMANDS[top_gesture.category_name]
+                try:
+                    send_serial_command(gesture_command)
+                    print(f"Command sent: {gesture_command}")
+                    
+                    # For specific gestures, schedule a zero command after 2 seconds
+                    if top_gesture.category_name in ["ILoveYou", "Thumb_Up", "Thumb_Down", "Victory"]:
+                        threading.Timer(2.0, send_zero_command).start()
+                        
+                except Exception as e:
+                    print(f'Failed to send gesture command: {e}')
 
-            # Send the zero command after a delay for specific gestures
-            if top_gesture in ["ILoveYou", "Thumb_Up", "Thumb_Down", "Victory"]:
-                def send_zero_command():
-                    send_serial_command(ZERO_COMMAND)
-                
-                # Start a timer to send the zero command after 2 seconds
-                threading.Timer(2.0, send_zero_command).start()
+        # Exit on key press
+        if cv2.waitKey(1) & 0xFF == 27:
+            break
 
-    # Exit on key press
-    if cv2.waitKey(1) & 0xFF == 27:  # Press 'Esc' key to exit
-        break
-
-# Release resources
-cap.release()
-ser.close()
-cv2.destroyAllWindows()
+finally:
+    # Release the camera and close serial connection
+    cap.release()
+    ser.close()
