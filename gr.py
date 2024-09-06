@@ -22,6 +22,8 @@ GESTURE_LABELS = {
     7: "ILoveYou"
 }
 
+ZERO_COMMAND = {"T": 133, "X": 0, "Y": 0, "SPD": 0, "ACC": 0} 
+
 COMMANDS = {
     "Open_Palm": {"T": 132, "IO4": 255, "IO5": 255},  # Turn on LED
     "Closed_Fist": {"T": 132, "IO4": 0, "IO5": 0},    # Turn off LED
@@ -30,8 +32,6 @@ COMMANDS = {
     "Thumb_Down": {"T": 133, "X": -30, "Y": -30, "SPD": 0, "ACC": 0}, # all down
     "Victory": {"T": 133, "X": 180, "Y": 0, "SPD": 0, "ACC": 0} # round 180
 }
-
-ZERO_COMMAND = {"T": 133, "X": 0, "Y": 0, "SPD": 0, "ACC": 0}
 
 # Initialize the gesture recognition model
 base_options = python.BaseOptions(model_asset_path='gesture_recognizer.task')
@@ -42,9 +42,16 @@ recognizer = vision.GestureRecognizer.create_from_options(options)
 cap = cv2.VideoCapture(0)
 
 # Initialize serial communication
-ser = serial.Serial(serial_port, baud_rate, timeout=1)
+try:
+    ser = serial.Serial(serial_port, baud_rate, timeout=1)
+except serial.SerialException as e:
+    print(f"Failed to open serial port: {e}")
+    ser = None
 
 def send_serial_command(command):
+    if ser is None:
+        print("Serial connection not available")
+        return
     json_command = json.dumps(command)
     ser.write(f"{json_command}\n".encode())
     time.sleep(0.1)  # Small delay to ensure command is sent
@@ -53,44 +60,47 @@ def send_zero_command():
     send_serial_command(ZERO_COMMAND)
     print("Zero command sent")
 
-try:
-    while cap.isOpened():
-        # Read a frame from the camera
-        success, frame = cap.read()
-        if not success:
-            print("Failed to read frame from camera.")
-            break
+while cap.isOpened():
+    # Read a frame from the camera
+    success, frame = cap.read()
+    if not success:
+        print("Failed to read frame from camera.")
+        break
 
-        # Convert the frame to RGB
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
+    # Convert the frame to RGB
+    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
 
-        # Recognize gestures
-        recognition_result = recognizer.recognize(image)
+    # Recognize gestures
+    recognition_result = recognizer.recognize(image)
 
-        # Process the result
-        if recognition_result.gestures:
-            top_gesture = recognition_result.gestures[0][0]
-            print(f"Detected gesture: {top_gesture.category_name}")
+    # Process the result
+    if recognition_result.gestures:
+        top_gesture = recognition_result.gestures[0][0]
+        gesture_name = top_gesture.category_name
+        print(f"Detected gesture: {gesture_name}")
 
-            if top_gesture.category_name in COMMANDS:
-                gesture_command = COMMANDS[top_gesture.category_name]
-                try:
-                    send_serial_command(gesture_command)
-                    print(f"Command sent: {gesture_command}")
-                    
-                    # For specific gestures, schedule a zero command after 2 seconds
-                    if top_gesture.category_name in ["ILoveYou", "Thumb_Up", "Thumb_Down", "Victory"]:
-                        threading.Timer(2.0, send_zero_command).start()
-                        
-                except Exception as e:
-                    print(f'Failed to send gesture command: {e}')
+        if gesture_name in COMMANDS:
+            gesture_command = COMMANDS[gesture_name]
+            try:
+                send_serial_command(gesture_command)
+                print(f"Gesture command sent: {gesture_command}")
+                
+                if gesture_name in ["ILoveYou", "Thumb_Up", "Thumb_Down", "Victory"]:
+                    threading.Timer(2.0, send_zero_command).start()
 
-        # Exit on key press
-        if cv2.waitKey(1) & 0xFF == 27:
-            break
+            except Exception as e:
+                print(f'Failed to send gesture command: {e}')
 
-finally:
-    # Release the camera and close serial connection
-    cap.release()
+    # Display the frame (optional, remove if not needed)
+    cv2.imshow('Gesture Recognition', frame)
+
+    # Exit on key press
+    if cv2.waitKey(1) & 0xFF == 27:
+        break
+
+# Release the camera and close the serial connection
+cap.release()
+cv2.destroyAllWindows()
+if ser:
     ser.close()
